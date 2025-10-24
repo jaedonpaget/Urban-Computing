@@ -2,7 +2,7 @@
 import csv, json, subprocess, time, sys, os
 from datetime import datetime, timezone
 
-# Args: output_csv [interval_seconds]
+# Usage: python gps_logger.py [output_csv] [interval_seconds]
 OUT = sys.argv[1] if len(sys.argv) > 1 else "gps_log.csv"
 INTERVAL = float(sys.argv[2]) if len(sys.argv) > 2 else 1.0
 
@@ -13,51 +13,25 @@ FIELDS = [
     "bearing_deg","altitude_m","provider","raw_provider","reused"
 ]
 
-# Keep the last good fix so we can reuse it briefly to avoid gaps
+# Reuse last fix briefly if a call times out, to avoid gaps
 LAST_LOC = None
 LAST_TIME = None
 REUSE_MAX_AGE_SEC = 10  # reuse last fix up to 10s old
 
-def get_loc(provider=None, max_age_ms=8000, timeout=12):
+def get_network_loc(max_age_ms=8000, timeout=6):
     """
-    Call termux-location once and return a dict with lat/lon if available.
-    provider: "network", "gps", or None (fused). max_age_ms allows recent cache.
-    timeout: per-call timeout seconds (tune higher for GPS).
+    Get a location fix strictly from the network provider.
+    - Uses: termux-location -p network -r once -d <max_age_ms>
+    - max_age_ms allows using a very recent cached fix for immediate response.
+    - timeout is kept short since network fixes are near-instant on your device.
     """
-    cmd = ["termux-location","-r","once","-d",str(max_age_ms)]
-    if provider:
-        cmd += ["-p", provider]
+    cmd = ["termux-location","-p","network","-r","once","-d",str(max_age_ms)]
     out = subprocess.check_output(cmd, timeout=timeout)
     loc = json.loads(out.decode())
     if "latitude" in loc and "longitude" in loc:
-        loc["_provider_used"] = provider or loc.get("provider")
+        loc["_provider_used"] = "network"
         return loc
-    raise RuntimeError("No lat/lon in location JSON")
-
-def try_fix():
-    """
-    Strategy for your Pixel:
-    1) Fast coarse fix via network (short timeout, larger allowed age).
-    2) Fresher GPS with longer timeout but small allowed age to avoid stale GPS.
-    3) Fallback to fused (None) if available.
-    """
-    # 1) Network: quick and acceptable at 1 Hz on your device
-    try:
-        return get_loc("network", max_age_ms=8000, timeout=6)
-    except Exception:
-        pass
-
-    # 2) GPS: allow longer timeout, prefer fresh data
-    try:
-        return get_loc("gps", max_age_ms=2000, timeout=15)
-    except Exception:
-        pass
-
-    # 3) Fused fallback
-    try:
-        return get_loc(None, max_age_ms=5000, timeout=8)
-    except Exception:
-        return None
+    raise RuntimeError("No lat/lon in network location JSON")
 
 def write_header_if_needed(path, fieldnames):
     exists = os.path.exists(path) and os.path.getsize(path) > 0
@@ -80,36 +54,38 @@ def to_row(loc, reused=False):
         "speed_mps": loc.get("speed"),
         "bearing_deg": loc.get("bearing"),
         "altitude_m": loc.get("altitude"),
-        "provider": loc.get("provider","fused"),
-        "raw_provider": loc.get("_provider_used"),
+        "provider": loc.get("provider","network"),
+        "raw_provider": loc.get("_provider_used","network"),
         "reused": int(1 if reused else 0),
     }
 
 def main():
     global LAST_LOC, LAST_TIME
-    print(f"Logging to {OUT} every {INTERVAL}s. Ctrl+C to stop.", flush=True)
+    print(f"Logging NETWORK provider to {OUT} every {INTERVAL}s. Ctrl+C to stop.", flush=True)
     f, w = write_header_if_needed(OUT, FIELDS)
     missed = 0
     try:
         while True:
-            start_loop = time.time()
-            loc = try_fix()
-            if loc:
+            loop_start = time.time()
+            try:
+                # Strictly network provider with quick cadence
+                loc = get_network_loc(max_age_ms=8000, timeout=6)
                 LAST_LOC = loc
                 LAST_TIME = time.time()
                 w.writerow(to_row(loc, reused=False))
                 f.flush()
                 missed = 0
-            else:
-                # Reuse last fix up to REUSE_MAX_AGE_SEC seconds old
+            except Exception as e:
+                # Reuse last fix briefly to avoid holes in the time series
                 if LAST_LOC and LAST_TIME and (time.time() - LAST_TIME) <= REUSE_MAX_AGE_SEC:
                     w.writerow(to_row(LAST_LOC, reused=True))
                     f.flush()
                 else:
                     missed += 1
-                    print(f"No fresh fix ({missed})", file=sys.stderr)
-            # Maintain approximate INTERVAL pacing (subtract time spent polling)
-            elapsed = time.time() - start_loop
+                    print(f"No network fix ({missed}): {e}", file=sys.stderr)
+
+            # Pace loop to INTERVAL
+            elapsed = time.time() - loop_start
             sleep_for = INTERVAL - elapsed
             if sleep_for > 0:
                 time.sleep(sleep_for)
