@@ -10,28 +10,47 @@ SESSION = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 FIELDS = [
     "session_id","timestamp_ms","timestamp_iso",
     "latitude","longitude","accuracy_m","speed_mps",
-    "bearing_deg","altitude_m","provider","raw_provider","reused"
+    "bearing_deg","altitude_m","provider","raw_provider",
+    "source","reused"
 ]
 
-# Reuse last fix briefly if a call times out, to avoid gaps
 LAST_LOC = None
 LAST_TIME = None
-REUSE_MAX_AGE_SEC = 10  # reuse last fix up to 10s old
+REUSE_MAX_AGE_SEC = 10  # reuse last fix up to 10s old if needed
 
-def get_network_loc(max_age_ms=8000, timeout=6):
-    """
-    Get a location fix strictly from the network provider.
-    - Uses: termux-location -p network -r once -d <max_age_ms>
-    - max_age_ms allows using a very recent cached fix for immediate response.
-    - timeout is kept short since network fixes are near-instant on your device.
-    """
-    cmd = ["termux-location","-p","network","-r","once","-d",str(max_age_ms)]
-    out = subprocess.check_output(cmd, timeout=timeout)
-    loc = json.loads(out.decode())
+def run_cmd(args, timeout):
+    p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        out, err = p.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        return None, "timeout"
+    rc = p.returncode
+    return (out if rc == 0 else None), (err.strip() if err else f"rc={rc}")
+
+def get_network_once(timeout=8):
+    # Valid flags are only -p and -r; no -d supported
+    out, err = run_cmd(["termux-location","-p","network","-r","once"], timeout)
+    if not out:
+        raise RuntimeError(f"network once failed: {err}")
+    loc = json.loads(out)
     if "latitude" in loc and "longitude" in loc:
         loc["_provider_used"] = "network"
+        loc["_source"] = "once"
         return loc
-    raise RuntimeError("No lat/lon in network location JSON")
+    raise RuntimeError("network once: no lat/lon")
+
+def get_last(timeout=3):
+    out, err = run_cmd(["termux-location","-r","last"], timeout)
+    if not out:
+        raise RuntimeError(f"last failed: {err}")
+    loc = json.loads(out)
+    if "latitude" in loc and "longitude" in loc:
+        # provider may be gps/network/fused; keep whatever is reported
+        loc["_provider_used"] = loc.get("provider","network")
+        loc["_source"] = "last"
+        return loc
+    raise RuntimeError("last: no lat/lon")
 
 def write_header_if_needed(path, fieldnames):
     exists = os.path.exists(path) and os.path.getsize(path) > 0
@@ -56,6 +75,7 @@ def to_row(loc, reused=False):
         "altitude_m": loc.get("altitude"),
         "provider": loc.get("provider","network"),
         "raw_provider": loc.get("_provider_used","network"),
+        "source": loc.get("_source","once"),
         "reused": int(1 if reused else 0),
     }
 
@@ -67,24 +87,34 @@ def main():
     try:
         while True:
             loop_start = time.time()
+            loc = None
+            # 1) Try immediate network fix (request once)
             try:
-                # Strictly network provider with quick cadence
-                loc = get_network_loc(max_age_ms=8000, timeout=6)
+                loc = get_network_once(timeout=8)
+            except Exception as e1:
+                # 2) Fallback to last-known fix to avoid gaps
+                try:
+                    loc = get_last(timeout=3)
+                except Exception as e2:
+                    loc = None
+                    print(f"No network fix: {e1}; no last fix: {e2}", file=sys.stderr)
+
+            if loc:
                 LAST_LOC = loc
                 LAST_TIME = time.time()
                 w.writerow(to_row(loc, reused=False))
                 f.flush()
                 missed = 0
-            except Exception as e:
-                # Reuse last fix briefly to avoid holes in the time series
+            else:
+                # 3) Reuse the last emitted fix briefly
                 if LAST_LOC and LAST_TIME and (time.time() - LAST_TIME) <= REUSE_MAX_AGE_SEC:
                     w.writerow(to_row(LAST_LOC, reused=True))
                     f.flush()
                 else:
                     missed += 1
-                    print(f"No network fix ({missed}): {e}", file=sys.stderr)
+                    print(f"No fix emitted ({missed})", file=sys.stderr)
 
-            # Pace loop to INTERVAL
+            # Pace the loop to INTERVAL seconds including command latency
             elapsed = time.time() - loop_start
             sleep_for = INTERVAL - elapsed
             if sleep_for > 0:
