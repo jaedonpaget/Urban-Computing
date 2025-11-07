@@ -6,8 +6,6 @@ import requests
 # Usage: python live_gps_bikes.py [output_csv] [gps_interval_seconds]
 # Env:
 #   FIREBASE_DB_URL = https://urban-computing-ass3-default-rtdb.europe-west1.firebasedatabase.app/
-#   FIREBASE_AUTH   = <optional token>
-#   JCDECAUX_API_KEY = 91256cdc4220cab58a9dbcfb72394da893dc5048
 #   BIKES_POLL_SECS = 60  # JCDecaux dynamic data ~1 min cadence
 
 OUT = sys.argv[1] if len(sys.argv) > 1 else "gps_log.csv"
@@ -26,11 +24,10 @@ LAST_TIME = None
 REUSE_MAX_AGE_SEC = 10
 
 FIREBASE_DB_URL = os.environ.get("FIREBASE_DB_URL","").rstrip("/")
-FIREBASE_AUTH   = os.environ.get("FIREBASE_AUTH")
 JC_KEY          = os.environ.get("JCDECAUX_API_KEY")
 BIKES_POLL_SECS = float(os.environ.get("BIKES_POLL_SECS","60"))
 
-JCD_URL = "https://api.jcdecaux.com/vls/v1/stations"  # contract=dublin, apiKey=<key>
+JCD_URL = "https://api.jcdecaux.com/vls/v1/stations" 
 
 # Shared latest bikes snapshot for nearest lookup
 BIKES_LOCK = threading.Lock()
@@ -40,10 +37,7 @@ def fb_url(path):
     if not FIREBASE_DB_URL:
         return ""
     url = f"{FIREBASE_DB_URL}/{path.lstrip('/')}.json"
-    if FIREBASE_AUTH:
-        sep = '&' if '?' in url else '?'
-        url = f"{url}{sep}auth={FIREBASE_AUTH}"
-    return url
+
 
 def post_point(session_id, row):
     if not FIREBASE_DB_URL:
