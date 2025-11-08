@@ -3,11 +3,6 @@ import csv, json, subprocess, time, sys, os, math, threading
 from datetime import datetime, timezone
 import requests
 
-# Usage: python live_gps_bikes.py [output_csv] [gps_interval_seconds]
-# Env:
-#   FIREBASE_DB_URL = https://urban-computing-ass3-default-rtdb.europe-west1.firebasedatabase.app/
-#   BIKES_POLL_SECS = 60  # JCDecaux dynamic data ~1 min cadence
-
 OUT = sys.argv[1] if len(sys.argv) > 1 else "gps_log.csv"
 INTERVAL = float(sys.argv[2]) if len(sys.argv) > 2 else 1.0
 SESSION = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -227,7 +222,7 @@ def main():
                 w.writerow(row); f.flush()
                 post_point(SESSION, row)
 
-                # Nearest station print (if we have a snapshot)
+                # Nearest station print
                 lat = row["latitude"]; lon = row["longitude"]
                 if lat is not None and lon is not None:
                     best, d = nearest_station_to(lat, lon)
