@@ -19,6 +19,7 @@ LAST_TIME = None
 REUSE_MAX_AGE_SEC = 10
 
 FIREBASE_DB_URL = os.environ.get("FIREBASE_DB_URL","").rstrip("/")
+FIREBASE_AUTH   = os.environ.get("FIREBASE_AUTH")
 JC_KEY          = os.environ.get("JCDECAUX_API_KEY")
 BIKES_POLL_SECS = float(os.environ.get("BIKES_POLL_SECS","60"))
 
@@ -32,6 +33,10 @@ def fb_url(path):
     if not FIREBASE_DB_URL:
         return ""
     url = f"{FIREBASE_DB_URL}/{path.lstrip('/')}.json"
+    if FIREBASE_AUTH:
+        sep = '&' if '?' in url else '?'
+        url = f"{url}{sep}auth={FIREBASE_AUTH}"
+    return url
 
 
 def post_point(session_id, row):
